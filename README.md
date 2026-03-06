@@ -1,5 +1,9 @@
 # 🎵 YouTube Music Tab Audio Output Selector
 
+<p align="center">
+  <img src="icons/icon-128.png" alt="Extension Icon" width="96">
+</p>
+
 > A Firefox extension that routes YouTube Music audio to a specific output device and keeps it there across song skips and playlist navigation.
 
 ![Firefox](https://img.shields.io/badge/Browser-Firefox-orange?logo=firefox-browser&logoColor=white)
