@@ -64,65 +64,155 @@
   function ensureOverlay() {
     if (document.getElementById(UI_ID)) return;
 
+    // Inject keyframe animations
+    const style = document.createElement("style");
+    style.textContent = `
+      @keyframes ytm-slide-in {
+        from { opacity: 0; transform: translateY(20px) scale(0.95); }
+        to   { opacity: 1; transform: translateY(0)    scale(1);    }
+      }
+      @keyframes ytm-fade-out {
+        from { opacity: 1; transform: translateY(0) scale(1); }
+        to   { opacity: 0; transform: translateY(8px) scale(0.97); pointer-events: none; }
+      }
+      #${UI_ID} { animation: ytm-slide-in 0.35s cubic-bezier(0.16,1,0.3,1) both; }
+      #${UI_ID}.ytm-hiding { animation: ytm-fade-out 0.4s cubic-bezier(0.4,0,1,1) forwards; }
+      #${UI_BTN_ID}:hover:not(:disabled) { filter: brightness(1.12); transform: scale(1.02); }
+      #${UI_BTN_ID}:active:not(:disabled) { transform: scale(0.97); }
+      #${UI_BTN_ID} { transition: filter 0.15s, transform 0.1s; }
+    `;
+    document.documentElement.appendChild(style);
+
     const wrap = document.createElement("div");
     wrap.id = UI_ID;
     Object.assign(wrap.style, {
-      position: "fixed", left: "50%", top: "18%",
-      transform: "translateX(-50%)", zIndex: 2147483647,
-      background: "rgba(0,0,0,0.85)", color: "white",
-      padding: "18px 20px", borderRadius: "14px",
-      fontSize: "16px", lineHeight: "1.35",
-      maxWidth: "520px", width: "calc(100% - 36px)",
-      boxShadow: "0 12px 35px rgba(0,0,0,0.35)",
-      display: "none"
+      position: "fixed",
+      bottom: "88px",   // sit just above YTM's player bar
+      right: "20px",
+      zIndex: "2147483647",
+      background: "rgba(24,24,24,0.96)",
+      backdropFilter: "blur(12px)",
+      WebkitBackdropFilter: "blur(12px)",
+      color: "#fff",
+      padding: "16px 18px 14px",
+      borderRadius: "16px",
+      fontSize: "14px",
+      lineHeight: "1.4",
+      width: "280px",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.07)",
+      display: "none",
+      fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
     });
 
-    const title = document.createElement("div");
+    // Header row: speaker icon + title
+    const header = document.createElement("div");
+    Object.assign(header.style, {
+      display: "flex", alignItems: "center", gap: "8px",
+      marginBottom: "8px",
+    });
+
+    const icon = document.createElement("span");
+    icon.textContent = "🔊";
+    icon.style.fontSize = "16px";
+
+    const title = document.createElement("span");
     title.style.fontWeight = "700";
-    title.style.marginBottom = "8px";
+    title.style.fontSize = "13px";
+    title.style.letterSpacing = "0.02em";
+    title.style.textTransform = "uppercase";
+    title.style.opacity = "0.6";
     title.textContent = "Audio Output";
 
+    header.appendChild(icon);
+    header.appendChild(title);
+
+    // Message
     const msg = document.createElement("div");
     msg.id = UI_ID + "-msg";
+    msg.style.marginBottom = "12px";
+    msg.style.fontSize = "14px";
     msg.textContent = "…";
 
-    const row = document.createElement("div");
-    Object.assign(row.style, { display: "flex", gap: "10px", marginTop: "12px", alignItems: "center", flexWrap: "wrap" });
-
+    // Button
     const btn = document.createElement("button");
     btn.id = UI_BTN_ID;
     btn.textContent = "Choose output device";
-    Object.assign(btn.style, { padding: "10px 14px", fontSize: "15px", borderRadius: "10px", border: "0", cursor: "pointer" });
+    Object.assign(btn.style, {
+      display: "block",
+      width: "100%",
+      padding: "9px 14px",
+      fontSize: "13px",
+      fontWeight: "600",
+      fontFamily: "inherit",
+      borderRadius: "999px",
+      border: "0",
+      cursor: "pointer",
+      background: "#f03",        // YTM red
+      color: "#fff",
+      letterSpacing: "0.01em",
+    });
 
-    const hint = document.createElement("div");
-    hint.id = UI_ID + "-hint";
-    hint.style.opacity = "0.85";
-    hint.style.fontSize = "13px";
-    hint.textContent = "Tip: Click anywhere to play — it will prompt when needed.";
-
-    row.appendChild(btn);
-    wrap.appendChild(title);
+    wrap.appendChild(header);
     wrap.appendChild(msg);
-    wrap.appendChild(row);
-    wrap.appendChild(hint);
+    wrap.appendChild(btn);
     document.documentElement.appendChild(wrap);
 
     btn.addEventListener("click", async () => { await promptAndApply("overlay-button"); });
   }
 
-  function showOverlay(text, { buttonText = "Choose output device", disableButton = false } = {}) {
+  function showOverlay(text, { buttonText = "Choose output device", disableButton = false, success = false } = {}) {
     ensureOverlay();
     const wrap = document.getElementById(UI_ID);
     const msg = document.getElementById(UI_ID + "-msg");
     const btn = document.getElementById(UI_BTN_ID);
+
     if (msg) msg.textContent = text;
-    if (btn) { btn.textContent = buttonText; btn.disabled = disableButton; btn.style.opacity = disableButton ? "0.6" : "1"; }
-    if (wrap) wrap.style.display = "block";
+    if (btn) {
+      if (success) {
+        btn.style.display = "none";
+      } else {
+        btn.style.display = "block";
+        btn.textContent = buttonText;
+        btn.disabled = disableButton;
+        btn.style.opacity = disableButton ? "0.55" : "1";
+        btn.style.cursor = disableButton ? "default" : "pointer";
+        btn.style.background = "#f03";
+      }
+    }
+
+    if (wrap) {
+      // Cancel any in-flight hide timers so they can't clobber this show.
+      clearTimeout(_hideTimer);
+      clearTimeout(_hideCleanupTimer);
+      // Restart the slide-in animation cleanly every time the overlay is (re)shown.
+      wrap.classList.remove("ytm-hiding");
+      wrap.style.animation = "none";
+      // Force a reflow so removing then re-adding the animation takes effect.
+      void wrap.offsetWidth;
+      wrap.style.animation = "";
+      wrap.style.display = "block";
+    }
   }
 
-  function hideOverlay() {
+  const FADE_OUT_MS = 400; // must match ytm-fade-out animation duration
+  let _hideTimer = null;
+  let _hideCleanupTimer = null; // inner timer that sets display:none after fade
+  function hideOverlay(delay = 0) {
+    clearTimeout(_hideTimer);
     const wrap = document.getElementById(UI_ID);
-    if (wrap) wrap.style.display = "none";
+    if (!wrap) return;
+    const doFade = () => {
+      wrap.classList.add("ytm-hiding");
+      _hideCleanupTimer = setTimeout(() => {
+        wrap.classList.remove("ytm-hiding");
+        wrap.style.display = "none";
+      }, FADE_OUT_MS);
+    };
+    if (delay > 0) {
+      _hideTimer = setTimeout(doFade, delay);
+    } else {
+      doFade();
+    }
   }
 
   /* ---------------- Routing logic ---------------- */
@@ -258,8 +348,8 @@
       sessionArmed = true;
       hasEverArmed = true;
       needsRearm = false;
-      showOverlay("Output set ✔ — " + label, { buttonText: "Done", disableButton: true });
-      setTimeout(() => hideOverlay(), 1200);
+      showOverlay("✔ Output set — " + label, { success: true });
+      hideOverlay(3000);
     } catch (e) {
       warn("promptAndApply FAIL:", e?.name, e?.message);
       needsRearm = true;
@@ -316,7 +406,7 @@
           warn("applySavedToElement: setSinkId FAIL after", attempt + 1, "attempts:", e?.name);
           needsRearm = true;
           showOverlay(
-            "Output routing needs to be re-armed.\nPress the button to re-pick your audio device.",
+            "Output routing needs to be re-armed.\nPress the button to select your audio device.",
             { buttonText: "Re-arm output" }
           );
           return;
