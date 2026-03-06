@@ -40,6 +40,14 @@ Firefox enforces strict security restrictions that prevent extensions from autom
 
 ---
 
+## Screenshots
+
+| Re-arm prompt | Device picker | Success toast |
+|:---:|:---:|:---:|
+| ![Re-arm prompt](images/prompt.png) | ![Device picker](images/select-output.png) | ![Success toast](images/success.png) |
+
+---
+
 ## Usage
 
 1. Open [YouTube Music](https://music.youtube.com)
