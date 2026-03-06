@@ -1,290 +1,392 @@
-const EXT_KEY = "ytmSinkSaved_v5";
-const LS_KEY  = "ytmSinkSaved_v5";
+// Wrap everything in an IIFE so `return` is a reliable early-exit.
+// `throw` at the top level of a content script can be swallowed by Firefox's runner.
+(function () {
 
-const UI_ID = "ytm-output-overlay";
-const UI_BTN_ID = "ytm-output-overlay-btn";
-
-function log(...a) { console.log("[YTM Output]", ...a); }
-function warn(...a) { console.warn("[YTM Output]", ...a); }
-
-log("✅ injected", new Date().toISOString(), "url =", location.href);
-
-async function extGet() {
-  try {
-    const obj = await browser.storage.local.get(EXT_KEY);
-    return obj[EXT_KEY] || null;
-  } catch (e) { warn("extGet failed:", e?.name, e?.message); return null; }
-}
-async function extSet(val) {
-  try { await browser.storage.local.set({ [EXT_KEY]: val }); return true; }
-  catch (e) { warn("extSet failed:", e?.name, e?.message); return false; }
-}
-function siteGet() {
-  try { const raw = localStorage.getItem(LS_KEY); return raw ? JSON.parse(raw) : null; }
-  catch (e) { warn("siteGet failed:", e?.name, e?.message); return null; }
-}
-function siteSet(val) {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(val)); return true; }
-  catch (e) { warn("siteSet failed:", e?.name, e?.message); return false; }
-}
-
-async function getSaved() {
-  const ext = await extGet();
-  const site = siteGet();
-  const chosen = ext || site || null;
-  log("Saved check:", { ext, site });
-
-  if (!ext && site) {
-    log("Restoring saved from site -> ext");
-    await extSet(site);
+  // Guard against double-injection. Both content script sandboxes share the same DOM,
+  // so a data attribute on <html> is visible to all instances in this frame.
+  if (document.documentElement.dataset.ytmOutputActive === "1") {
+    return;
   }
-  return chosen;
-}
+  document.documentElement.dataset.ytmOutputActive = "1";
 
-async function savePicked(deviceId, label) {
-  const val = { deviceId: String(deviceId || ""), label: String(label || "") };
-  log("Saving:", val);
-  await extSet(val);
-  siteSet(val);
-  return val;
-}
+  const EXT_KEY = "ytmSinkSaved_v5";
+  const LS_KEY = "ytmSinkSaved_v5";
 
-/* ---------------- UI overlay ---------------- */
+  const UI_ID = "ytm-output-overlay";
+  const UI_BTN_ID = "ytm-output-overlay-btn";
 
-function ensureOverlay() {
-  if (document.getElementById(UI_ID)) return;
+  function log(...a) { console.log("[YTM Output]", ...a); }
+  function warn(...a) { console.warn("[YTM Output]", ...a); }
 
-  const wrap = document.createElement("div");
-  wrap.id = UI_ID;
+  log("✅ v1.1.0", new Date().toISOString(), "url =", location.href);
 
-  // Big centered banner
-  Object.assign(wrap.style, {
-    position: "fixed",
-    left: "50%",
-    top: "18%",
-    transform: "translateX(-50%)",
-    zIndex: 2147483647,
-    background: "rgba(0,0,0,0.85)",
-    color: "white",
-    padding: "18px 20px",
-    borderRadius: "14px",
-    fontSize: "16px",
-    lineHeight: "1.35",
-    maxWidth: "520px",
-    width: "calc(100% - 36px)",
-    boxShadow: "0 12px 35px rgba(0,0,0,0.35)",
-    display: "none" // start hidden; show when needed
-  });
+  /* ---------------- Storage helpers ---------------- */
 
-  const title = document.createElement("div");
-  title.style.fontWeight = "700";
-  title.style.marginBottom = "8px";
-  title.textContent = "Audio Output";
-
-  const msg = document.createElement("div");
-  msg.id = UI_ID + "-msg";
-  msg.textContent = "…";
-
-  const row = document.createElement("div");
-  Object.assign(row.style, {
-    display: "flex",
-    gap: "10px",
-    marginTop: "12px",
-    alignItems: "center",
-    flexWrap: "wrap"
-  });
-
-  const btn = document.createElement("button");
-  btn.id = UI_BTN_ID;
-  btn.textContent = "Choose output device";
-  Object.assign(btn.style, {
-    padding: "10px 14px",
-    fontSize: "15px",
-    borderRadius: "10px",
-    border: "0",
-    cursor: "pointer"
-  });
-
-  const hint = document.createElement("div");
-  hint.id = UI_ID + "-hint";
-  hint.style.opacity = "0.85";
-  hint.style.fontSize = "13px";
-  hint.textContent = "Tip: You can also just press Play — it will prompt when needed.";
-
-  row.appendChild(btn);
-  wrap.appendChild(title);
-  wrap.appendChild(msg);
-  wrap.appendChild(row);
-  wrap.appendChild(hint);
-
-  document.documentElement.appendChild(wrap);
-  log("Injected overlay UI");
-
-  btn.addEventListener("click", async () => {
-    await promptAndApply("overlay-button");
-  });
-}
-
-function showOverlay(text, { buttonText = "Choose output device", disableButton = false } = {}) {
-  ensureOverlay();
-  const wrap = document.getElementById(UI_ID);
-  const msg = document.getElementById(UI_ID + "-msg");
-  const btn = document.getElementById(UI_BTN_ID);
-
-  if (msg) msg.textContent = text;
-  if (btn) {
-    btn.textContent = buttonText;
-    btn.disabled = disableButton;
-    btn.style.opacity = disableButton ? "0.6" : "1";
-  }
-  if (wrap) wrap.style.display = "block";
-}
-
-function hideOverlay() {
-  const wrap = document.getElementById(UI_ID);
-  if (wrap) wrap.style.display = "none";
-}
-
-/* ---------------- Routing logic ---------------- */
-
-async function applyToAllMedia(deviceId) {
-  const media = [...document.querySelectorAll("audio,video")];
-  log("applyToAllMedia: found", media.length);
-
-  let appliedAny = false;
-  let lastError = null;
-
-  for (const el of media) {
-    if (typeof el.setSinkId !== "function") continue;
-
+  async function extGet() {
     try {
-      if (el.sinkId === deviceId) {
-        log(el.tagName, "already sinkId =", el.sinkId);
+      const obj = await browser.storage.local.get(EXT_KEY);
+      return obj[EXT_KEY] || null;
+    } catch (e) { warn("extGet failed:", e?.name, e?.message); return null; }
+  }
+  async function extSet(val) {
+    try { await browser.storage.local.set({ [EXT_KEY]: val }); return true; }
+    catch (e) { warn("extSet failed:", e?.name, e?.message); return false; }
+  }
+  function siteGet() {
+    try { const raw = localStorage.getItem(LS_KEY); return raw ? JSON.parse(raw) : null; }
+    catch (e) { warn("siteGet failed:", e?.name, e?.message); return null; }
+  }
+  function siteSet(val) {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(val)); return true; }
+    catch (e) { warn("siteSet failed:", e?.name, e?.message); return false; }
+  }
+
+  async function getSaved() {
+    const ext = await extGet();
+    const site = siteGet();
+    const chosen = ext || site || null;
+    if (!ext && site) { await extSet(site); } // migrate site → ext
+    if (chosen?.deviceId) _deviceCache = chosen;
+    return chosen;
+  }
+
+  async function savePicked(deviceId, label) {
+    const val = { deviceId: String(deviceId || ""), label: String(label || "") };
+    log("Saving device:", label || deviceId.slice(0, 12));
+    _deviceCache = val;
+    await extSet(val);
+    siteSet(val);
+    return val;
+  }
+
+  /* ---------------- UI overlay ---------------- */
+
+  function ensureOverlay() {
+    if (document.getElementById(UI_ID)) return;
+
+    const wrap = document.createElement("div");
+    wrap.id = UI_ID;
+    Object.assign(wrap.style, {
+      position: "fixed", left: "50%", top: "18%",
+      transform: "translateX(-50%)", zIndex: 2147483647,
+      background: "rgba(0,0,0,0.85)", color: "white",
+      padding: "18px 20px", borderRadius: "14px",
+      fontSize: "16px", lineHeight: "1.35",
+      maxWidth: "520px", width: "calc(100% - 36px)",
+      boxShadow: "0 12px 35px rgba(0,0,0,0.35)",
+      display: "none"
+    });
+
+    const title = document.createElement("div");
+    title.style.fontWeight = "700";
+    title.style.marginBottom = "8px";
+    title.textContent = "Audio Output";
+
+    const msg = document.createElement("div");
+    msg.id = UI_ID + "-msg";
+    msg.textContent = "…";
+
+    const row = document.createElement("div");
+    Object.assign(row.style, { display: "flex", gap: "10px", marginTop: "12px", alignItems: "center", flexWrap: "wrap" });
+
+    const btn = document.createElement("button");
+    btn.id = UI_BTN_ID;
+    btn.textContent = "Choose output device";
+    Object.assign(btn.style, { padding: "10px 14px", fontSize: "15px", borderRadius: "10px", border: "0", cursor: "pointer" });
+
+    const hint = document.createElement("div");
+    hint.id = UI_ID + "-hint";
+    hint.style.opacity = "0.85";
+    hint.style.fontSize = "13px";
+    hint.textContent = "Tip: Click anywhere to play — it will prompt when needed.";
+
+    row.appendChild(btn);
+    wrap.appendChild(title);
+    wrap.appendChild(msg);
+    wrap.appendChild(row);
+    wrap.appendChild(hint);
+    document.documentElement.appendChild(wrap);
+
+    btn.addEventListener("click", async () => { await promptAndApply("overlay-button"); });
+  }
+
+  function showOverlay(text, { buttonText = "Choose output device", disableButton = false } = {}) {
+    ensureOverlay();
+    const wrap = document.getElementById(UI_ID);
+    const msg = document.getElementById(UI_ID + "-msg");
+    const btn = document.getElementById(UI_BTN_ID);
+    if (msg) msg.textContent = text;
+    if (btn) { btn.textContent = buttonText; btn.disabled = disableButton; btn.style.opacity = disableButton ? "0.6" : "1"; }
+    if (wrap) wrap.style.display = "block";
+  }
+
+  function hideOverlay() {
+    const wrap = document.getElementById(UI_ID);
+    if (wrap) wrap.style.display = "none";
+  }
+
+  /* ---------------- Routing logic ---------------- */
+
+  // Collect all audio/video elements including those inside shadow roots.
+  // YTM uses Polymer web components; the player <video> may be in a shadow DOM.
+  function collectMediaElements(root = document) {
+    const results = [];
+    root.querySelectorAll("audio,video").forEach(el => results.push(el));
+    root.querySelectorAll("*").forEach(el => {
+      if (el.shadowRoot) results.push(...collectMediaElements(el.shadowRoot));
+    });
+    return results;
+  }
+
+  async function applyToAllMedia(deviceId) {
+    const media = collectMediaElements();
+    let appliedAny = false;
+    let lastError = null;
+
+    for (const el of media) {
+      if (typeof el.setSinkId !== "function") continue;
+      try {
+        if (el.sinkId === deviceId && armedElements.has(el) && !pendingElements.has(el)) {
+          // Confirmed-armed at play/playing state — routing is already established.
+          appliedAny = true;
+          continue;
+        }
+        // Element is pending confirmation (setSinkId was called at HAVE_NOTHING, may not
+        // have actually routed) or sinkId doesn't match. Do reset+reapply:
+        // Firefox treats setSinkId(sameValue) as a no-op even if routing was reset.
+        if (el.sinkId === deviceId) await el.setSinkId(""); // force state change
+        await el.setSinkId(deviceId);
+        pendingElements.delete(el);
+        armedElements.add(el);
+        log(el.tagName, "→", deviceId.slice(0, 12));
         appliedAny = true;
-        continue;
+      } catch (e) {
+        lastError = e;
+        warn(el.tagName, "setSinkId FAIL:", e?.name, e?.message);
       }
-      await el.setSinkId(deviceId);
-      log(el.tagName, "setSinkId OK →", el.sinkId);
-      appliedAny = true;
-    } catch (e) {
-      lastError = e;
-      warn(el.tagName, "setSinkId FAIL:", e?.name, e?.message);
     }
+    return { appliedAny, lastError };
   }
 
-  return { appliedAny, lastError };
-}
+  let needsRearm = false;
+  let promptInFlight = false;
+  let sessionArmed = false;  // true once setSinkId succeeded at play state
+  let hasEverArmed = false;  // sticky: true once selectAudioOutput() ever succeeded
+  let applyGeneration = 0;    // increment to cancel stale retry loops
+  const armedElements = new WeakSet(); // confirmed-routed at play/playing state
+  const pendingElements = new WeakSet(); // setSinkId called at HAVE_NOTHING; needs reconfirm
+  let _deviceCache = null;    // hot-path cache: avoids storage IPC latency
+  let _skipPollTimer = null;  // polling interval active after a song skip
 
-let needsRearm = false;
-let promptInFlight = false;
-
-async function applySaved(reason) {
-  const saved = await getSaved();
-  log("applySaved", reason, "saved =", saved);
-
-  if (!saved?.deviceId) {
-    needsRearm = true;
-    showOverlay("Choose an output device for YouTube Music.", { buttonText: "Choose output device" });
-    return false;
+  // After a skip/nav, poll every 250 ms for up to 3 s to catch any elements that
+  // appear late (e.g. during crossfade) or lurk in shadow DOM.
+  function startSkipPoll() {
+    clearInterval(_skipPollTimer);
+    if (!_deviceCache?.deviceId) return;
+    let ticks = 0;
+    _skipPollTimer = setInterval(async () => {
+      ticks++;
+      if (ticks > 12) { clearInterval(_skipPollTimer); return; }
+      const device = _deviceCache?.deviceId;
+      if (!device) { clearInterval(_skipPollTimer); return; }
+      for (const el of collectMediaElements()) {
+        if (typeof el.setSinkId === "function" && el.sinkId !== device) {
+          await applySavedToElement(el, { forceRearm: true });
+        }
+      }
+    }, 250);
   }
 
-  // Wait briefly for media to exist
-  for (let i = 1; i <= 10; i++) {
-    const r = await applyToAllMedia(saved.deviceId);
+  async function applySaved(reason) {
+    const myGen = ++applyGeneration;
+    const saved = await getSaved();
 
-    if (r.appliedAny) {
-      needsRearm = false;
-      hideOverlay();
-      return true;
-    }
-
-    if (r.lastError?.name === "NotFoundError") {
+    if (!saved?.deviceId) {
+      if (myGen !== applyGeneration) return false;
       needsRearm = true;
-      showOverlay(
-        "Output routing needs to be re-armed for this tab.\nClick Play (or press the button) to choose an output device.",
-        { buttonText: "Re-arm output" }
-      );
-      warn("Saved deviceId not valid in this session → will re-arm on user gesture.");
+      showOverlay("Choose an output device for YouTube Music.", { buttonText: "Choose output device" });
       return false;
     }
 
-    await new Promise(res => setTimeout(res, 700));
+    for (let i = 1; i <= 10; i++) {
+      if (myGen !== applyGeneration) return false;
+      const r = await applyToAllMedia(saved.deviceId);
+      if (myGen !== applyGeneration) return false;
+
+      if (r.appliedAny) {
+        sessionArmed = true;
+        needsRearm = false;
+        hideOverlay();
+        return true;
+      }
+
+      if (r.lastError?.name === "NotFoundError") {
+        if (!sessionArmed) {
+          needsRearm = true;
+          showOverlay(
+            "Output routing needs to be re-armed for this tab.\nClick Play (or press the button) to choose an output device.",
+            { buttonText: "Re-arm output" }
+          );
+          warn("Saved deviceId not valid in this session → re-arm on user gesture.");
+        }
+        return false;
+      }
+
+      await new Promise(res => setTimeout(res, 700));
+    }
+
+    if (myGen !== applyGeneration) return false;
+    if (needsRearm && !sessionArmed) {
+      showOverlay("Click Play to re-arm output routing (or press the button).", { buttonText: "Re-arm output" });
+    } else {
+      hideOverlay();
+    }
+    return false;
   }
 
-  // No media yet (not playing). Keep overlay only if we know we need it.
-  if (needsRearm) {
-    showOverlay("Click Play to re-arm output routing (or press the button).", { buttonText: "Re-arm output" });
-  } else {
-    // If we have a saved device but no media yet, don't annoy user
-    hideOverlay();
+  async function promptAndApply(source) {
+    if (promptInFlight) return;
+    promptInFlight = true;
+    try {
+      showOverlay("Picking output device…", { buttonText: "Picking…", disableButton: true });
+      const d = await navigator.mediaDevices.selectAudioOutput();
+      const deviceId = String(d?.deviceId || "");
+      const label = String(d?.label || "");
+      if (!deviceId) throw new Error("No deviceId returned");
+      await savePicked(deviceId, label);
+      await applySaved("after-pick");
+      sessionArmed = true;
+      hasEverArmed = true;
+      needsRearm = false;
+      showOverlay("Output set ✔ — " + label, { buttonText: "Done", disableButton: true });
+      setTimeout(() => hideOverlay(), 1200);
+    } catch (e) {
+      warn("promptAndApply FAIL:", e?.name, e?.message);
+      needsRearm = true;
+      showOverlay("Could not set output. Click to try again.", { buttonText: "Choose output device" });
+    } finally {
+      promptInFlight = false;
+    }
   }
-  return false;
-}
 
-async function promptAndApply(source) {
-  if (promptInFlight) return;
-  promptInFlight = true;
+  /* ---------------- Boot + event hooks ---------------- */
 
-  try {
-    log("promptAndApply source =", source);
+  // Apply saved sink to a single element via the hot-path cache.
+  // forceRearm=true bypasses the armedElements guard (used on song skip/loadstart).
+  async function applySavedToElement(el, { forceRearm = false } = {}) {
+    if (typeof el.setSinkId !== "function") return;
+    if (!forceRearm && armedElements.has(el)) return;
 
-    showOverlay("Picking output device…", { buttonText: "Picking…", disableButton: true });
+    const fast = _deviceCache;
+    if (fast?.deviceId) {
+      try {
+        const alreadySet = el.sinkId === fast.deviceId;
+        if (forceRearm && alreadySet) {
+          // Firefox preserves the sinkId property through media reloads but may treat
+          // setSinkId(sameValue) as a no-op. Reset to "" to force re-initialisation.
+          await el.setSinkId("");
+        }
+        if (!alreadySet || forceRearm) await el.setSinkId(fast.deviceId);
+        // Mark pending — applyToAllMedia confirms routing at play/playing state.
+        pendingElements.add(el);
+        sessionArmed = true;
+        return;
+      } catch (e) {
+        if (e?.name !== "NotFoundError") {
+          warn("applySavedToElement FAIL:", e?.name, e?.message);
+          return;
+        }
+        // NotFoundError — permission not yet granted, fall through to slow-path retries
+      }
+    }
 
-    const d = await navigator.mediaDevices.selectAudioOutput();
-    const deviceId = String(d?.deviceId || "");
-    const label = String(d?.label || "");
-    log("selectAudioOutput OK:", { deviceId, label });
+    // Slow path: full storage read + retry loop (used before first selectAudioOutput)
+    const saved = await getSaved();
+    if (!saved?.deviceId) return;
 
-    if (!deviceId) throw new Error("No deviceId returned");
-
-    await savePicked(deviceId, label);
-
-    // Apply immediately (media should exist if user clicked play)
-    await applySaved("after-pick");
-
-    needsRearm = false;
-
-    showOverlay("Output set ✔", { buttonText: "Done", disableButton: true });
-    setTimeout(() => hideOverlay(), 900);
-  } catch (e) {
-    warn("promptAndApply FAIL:", e?.name, e?.message);
-    needsRearm = true;
-    showOverlay("Could not set output. Click to try again.", { buttonText: "Choose output device" });
-  } finally {
-    promptInFlight = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (!forceRearm && armedElements.has(el)) return;
+      try {
+        if (el.sinkId !== saved.deviceId) await el.setSinkId(saved.deviceId);
+        pendingElements.add(el);
+        sessionArmed = true;
+        return;
+      } catch (e) {
+        if (e?.name !== "NotFoundError" || attempt === 4) {
+          warn("applySavedToElement: setSinkId FAIL after", attempt + 1, "attempts:", e?.name);
+          needsRearm = true;
+          showOverlay(
+            "Output routing needs to be re-armed.\nPress the button to re-pick your audio device.",
+            { buttonText: "Re-arm output" }
+          );
+          return;
+        }
+        await new Promise(r => setTimeout(r, 150));
+      }
+    }
   }
-}
 
-/* ---------------- Boot + event hooks ---------------- */
+  // Watch for new <audio>/<video> nodes added by YTM (e.g. new element on SPA navigation).
+  // Also observe shadow roots so elements inside Polymer components are caught.
+  const _mediaObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.matches?.("audio,video")) applySavedToElement(node);
+        node.querySelectorAll?.("audio,video").forEach(el => applySavedToElement(el));
+        if (node.shadowRoot) {
+          _mediaObserver.observe(node.shadowRoot, { childList: true, subtree: true });
+          node.shadowRoot.querySelectorAll("audio,video").forEach(el => applySavedToElement(el));
+        }
+      }
+    }
+  });
+  _mediaObserver.observe(document.documentElement, { childList: true, subtree: true });
 
-ensureOverlay();
+  ensureOverlay();
+  applySaved("initial");
 
-// Initial attempt (may determine we need rearm)
-applySaved("initial");
-
-// When user clicks play controls, if rearm is needed, prompt immediately on that click.
-document.addEventListener(
-  "click",
-  (ev) => {
-    if (!needsRearm) return;
-
+  // Trigger device picker on any click when the initial arm is needed.
+  // Broad approach: playback can be initiated via song rows, album art, playlist items etc.
+  document.addEventListener("click", (ev) => {
+    if (!needsRearm || hasEverArmed) return;
     const t = ev.target;
-    const el = t && t.closest ? t.closest("button,ytmusic-play-button,tp-yt-paper-icon-button") : null;
-    if (!el) return;
-
-    // Don’t trigger from clicking our overlay button; it has its own handler.
-    if (el.id === UI_BTN_ID) return;
-
+    if (!t) return;
+    if (t.closest?.(`#${UI_BTN_ID}`)) return; // overlay button has its own handler
+    if (t.closest?.("input,select,textarea,a[href],label")) return; // non-playback elements
     promptAndApply("click-heuristic");
-  },
-  true
-);
+  }, true);
 
-// Retry applying on play/playing (no prompt, just apply attempt)
-document.addEventListener("play", () => applySaved("play"), true);
-document.addEventListener("playing", () => applySaved("playing"), true);
+  // Re-apply on every play/playing event — applyToAllMedia is idempotent and
+  // this is where pending elements get promoted to confirmed-armed status.
+  document.addEventListener("play", () => applySaved("play"), true);
+  document.addEventListener("playing", () => applySaved("playing"), true);
 
-// If tab becomes visible again, try to apply once (helps after sleep/device changes)
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) applySaved("visibility");
-});
+  // Re-apply when tab becomes visible again (helps after sleep/device changes).
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) applySaved("visibility");
+  });
+
+  // emptied fires when src changes — clear armed/pending state and start skip poll.
+  document.addEventListener("emptied", (ev) => {
+    const el = ev.composedPath?.()?.[0] ?? ev.target;
+    if (el.tagName !== "AUDIO" && el.tagName !== "VIDEO") return;
+    if (!hasEverArmed) return;
+    armedElements.delete(el);
+    pendingElements.delete(el);
+    startSkipPoll();
+  }, true);
+
+  // loadstart: force-rearm the element using the reset+reapply pattern.
+  // Firefox treats setSinkId(sameValue) as a no-op when routing was reset by
+  // a media reload, so we must reset to "" first then re-apply our device.
+  document.addEventListener("loadstart", async (ev) => {
+    const el = ev.composedPath?.()?.[0] ?? ev.target;
+    if (el.tagName !== "AUDIO" && el.tagName !== "VIDEO") return;
+    if (!hasEverArmed) return;
+    if (!_deviceCache?.deviceId) return;
+    armedElements.delete(el);
+    await applySavedToElement(el, { forceRearm: true });
+  }, true);
+
+})(); // end IIFE

@@ -1,27 +1,31 @@
 {
   "manifest_version": 2,
   "name": "YouTube Music Tab Audio Output Selector",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Routes YouTube Music tab audio to a selected output device and re-arms after reload when Firefox requires user activation.",
-
   "permissions": [
     "storage",
     "*://music.youtube.com/*"
   ],
-
   "content_scripts": [
     {
-      "matches": ["*://music.youtube.com/*"],
-      "js": ["content_scripts/content.js"],
-      "run_at": "document_start"
+      "matches": [
+        "*://music.youtube.com/*"
+      ],
+      "js": [
+        "content_scripts/content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
-
   "browser_specific_settings": {
     "gecko": {
       "id": "ytm-tab-audio-output-selector@pepega.wtf",
       "data_collection_permissions": {
-        "required": ["none"]
+        "required": [
+          "none"
+        ]
       }
     }
   }
